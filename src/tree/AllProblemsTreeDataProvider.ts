@@ -26,8 +26,12 @@ function getCacheDir(): string {
  *
  * @returns The path to the single problems cache file.
  */
-function getCacheFile(): string {
-  return path.join(getCacheDir(), 'problems_cache.json');
+function getCacheFile(endpoint: string): string {
+  const filename =
+    endpoint === 'https://leetcode.com'
+      ? 'problems_cache.json'
+      : `problems_cache_${encodeURIComponent(endpoint)}.json`;
+  return path.join(getCacheDir(), filename);
 }
 
 type RefreshMode = 'normal' | 'incremental' | 'full';
@@ -42,6 +46,7 @@ export class AllProblemsTreeDataProvider implements vscode.TreeDataProvider<vsco
     this._onDidChangeTreeData.event;
 
   private problemsCache: Problem[] = [];
+  private cacheEndpoint: string | undefined;
   private refreshMode: RefreshMode = 'normal';
 
   /**
@@ -69,7 +74,7 @@ export class AllProblemsTreeDataProvider implements vscode.TreeDataProvider<vsco
     this.problemsCache = [];
     this.refreshMode = 'full';
 
-    const cacheFile = getCacheFile();
+    const cacheFile = this.getCacheFilePath();
     if (fs.existsSync(cacheFile)) {
       fs.unlinkSync(cacheFile);
       Logger.getInstance().info('tree', 'Disk cache deleted for full refresh');
@@ -85,7 +90,7 @@ export class AllProblemsTreeDataProvider implements vscode.TreeDataProvider<vsco
    */
   deleteCache(): void {
     this.problemsCache = [];
-    const cacheFile = getCacheFile();
+    const cacheFile = this.getCacheFilePath();
     if (fs.existsSync(cacheFile)) {
       fs.unlinkSync(cacheFile);
       Logger.getInstance().info('tree', 'Problem cache deleted by user');
@@ -99,7 +104,7 @@ export class AllProblemsTreeDataProvider implements vscode.TreeDataProvider<vsco
    * @returns The absolute path to the cache file.
    */
   getCacheFilePath(): string {
-    return getCacheFile();
+    return getCacheFile(this.authManager.getClient().getEndpoint());
   }
 
   /**
@@ -160,7 +165,9 @@ export class AllProblemsTreeDataProvider implements vscode.TreeDataProvider<vsco
    * @returns The currently cached/loaded problems.
    */
   public getProblemsList(): Problem[] {
-    return this.problemsCache;
+    return this.cacheEndpoint === this.authManager.getClient().getEndpoint()
+      ? this.problemsCache
+      : [];
   }
 
   /**
@@ -179,6 +186,11 @@ export class AllProblemsTreeDataProvider implements vscode.TreeDataProvider<vsco
    * @returns A promise that resolves to the loaded problems.
    */
   private async loadProblems(): Promise<Problem[]> {
+    const endpoint = this.authManager.getClient().getEndpoint();
+    if (this.cacheEndpoint !== endpoint) {
+      this.problemsCache = [];
+      this.cacheEndpoint = endpoint;
+    }
     // Capture and reset the refresh mode so it only applies once
     const mode = this.refreshMode;
     this.refreshMode = 'normal';
@@ -191,7 +203,7 @@ export class AllProblemsTreeDataProvider implements vscode.TreeDataProvider<vsco
       return this.problemsCache;
     }
 
-    const cacheFile = getCacheFile();
+    const cacheFile = getCacheFile(endpoint);
     await this.ensureCacheDir();
 
     // Full refresh: disk cache already deleted in fullRefresh(), just fetch everything
@@ -273,48 +285,15 @@ export class AllProblemsTreeDataProvider implements vscode.TreeDataProvider<vsco
         const batchSize = 100;
 
         // Probe the API to learn the current total count
-        const queryStr = `
-          query problemsetQuestionList(
-            $categorySlug: String, $limit: Int, $skip: Int,
-            $filters: QuestionListFilterInput
-          ) {
-            problemsetQuestionList: questionList(
-              categorySlug: $categorySlug
-              limit: $limit
-              skip: $skip
-              filters: $filters
-            ) {
-              total: totalNum
-              questions: data {
-                frontendQuestionId: questionFrontendId
-                title
-                titleSlug
-                difficulty
-                acRate
-                paidOnly: isPaidOnly
-                status
-                topicTags { name slug }
-              }
-            }
-          }
-        `;
+        const firstPage = await client.getProblemPage(0, 1);
 
-        const firstData = await client.query<{
-          problemsetQuestionList: { total: number; questions: Problem[] };
-        }>(queryStr, { categorySlug: '', skip: 0, limit: 1, filters: {} });
-
-        if (
-          firstData === null ||
-          firstData === undefined ||
-          firstData.problemsetQuestionList === undefined ||
-          firstData.problemsetQuestionList === null
-        ) {
+        if (firstPage === undefined) {
           Logger.getInstance().error('tree', 'Failed to query API total during incremental update');
           this.problemsCache = existingQuestions;
           return;
         }
 
-        const apiTotal = firstData.problemsetQuestionList.total;
+        const apiTotal = firstPage.total;
         const cachedCount = existingQuestions.length;
 
         if (apiTotal <= cachedCount) {
@@ -339,20 +318,7 @@ export class AllProblemsTreeDataProvider implements vscode.TreeDataProvider<vsco
         }
 
         const pageResults = await Promise.all(
-          newPages.map(async (skip) => {
-            const data = await client.query<{
-              problemsetQuestionList: { total: number; questions: Problem[] };
-            }>(queryStr, { categorySlug: '', skip, limit: batchSize, filters: {} });
-            if (
-              data === null ||
-              data === undefined ||
-              data.problemsetQuestionList === undefined ||
-              data.problemsetQuestionList === null
-            ) {
-              return [];
-            }
-            return data.problemsetQuestionList.questions;
-          }),
+          newPages.map((skip) => client.getProblems(skip, batchSize)),
         );
 
         const newProblems: Problem[] = [];

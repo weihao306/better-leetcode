@@ -331,7 +331,8 @@ suite('LeetCode Module Test Suite', () => {
     test('Should fetch getAllProblems efficiently via batching', async () => {
       const client = new LeetCodeClient();
       let reqCount = 0;
-      fetchMock = () => {
+      fetchMock = (_url, init) => {
+        assert.match(String(init?.body), /problemsetQuestionList: questionList/);
         reqCount++;
         return Promise.resolve(
           createMockResponse({
@@ -348,6 +349,138 @@ suite('LeetCode Module Test Suite', () => {
       const problems = await client.getAllProblems(2); // Batch size 2, total 5 means 3 requests (0, 2, 4)
       assert.strictEqual(problems.length, 3);
       assert.strictEqual(reqCount, 3);
+    });
+
+    test('Should page the China catalog and normalize its problem metadata', async () => {
+      const client = new LeetCodeClient();
+      client.setEndpoint('https://leetcode.cn/');
+      const offsets: number[] = [];
+      fetchMock = (url, init) => {
+        assert.strictEqual(url, 'https://leetcode.cn/graphql/');
+        const body = JSON.parse(String(init?.body)) as {
+          query: string;
+          variables: { skip: number; limit: number };
+        };
+        assert.match(body.query, /problemsetQuestionListV2\(limit: \$limit, skip: \$skip\)/);
+        assert.deepStrictEqual(body.variables, { skip: body.variables.skip, limit: 1 });
+        offsets.push(body.variables.skip);
+        return Promise.resolve(
+          createMockResponse({
+            data: {
+              problemsetQuestionListV2: {
+                totalLength: 2,
+                questions: [
+                  {
+                    questionFrontendId: String(body.variables.skip + 1),
+                    title: 'Two Sum',
+                    translatedTitle: body.variables.skip === 0 ? 'Localized Two Sum' : null,
+                    titleSlug: 'two-sum',
+                    difficulty: 'EASY',
+                    acRate: 0.5,
+                    paidOnly: false,
+                    status: body.variables.skip === 0 ? 'AC' : 'TO_DO',
+                    topicTags: [{ name: 'Array', slug: 'array' }],
+                  },
+                ],
+              },
+            },
+          }),
+        );
+      };
+      const problems = await client.getAllProblems(1);
+      assert.deepStrictEqual(offsets, [0, 1]);
+      assert.deepStrictEqual(problems[0], {
+        frontendQuestionId: '1',
+        title: 'Localized Two Sum',
+        titleSlug: 'two-sum',
+        difficulty: 'Easy',
+        acRate: 50,
+        paidOnly: false,
+        status: 'ac',
+        topicTags: [{ name: 'Array', slug: 'array' }],
+      });
+      assert.strictEqual(problems[1]?.title, 'Two Sum');
+      assert.strictEqual(problems[1]?.status, null);
+    });
+
+    test('Should read the China daily record and handle an empty response', async () => {
+      const client = new LeetCodeClient();
+      client.setEndpoint('https://leetcode.cn');
+      fetchMock = (_url, init) => {
+        assert.match(String(init?.body), /todayRecord/);
+        assert.doesNotMatch(String(init?.body), /activeDailyCodingChallengeQuestion/);
+        return Promise.resolve(
+          createMockResponse({
+            data: {
+              todayRecord: [
+                null,
+                {
+                  question: {
+                    questionFrontendId: '1',
+                    questionTitle: 'Two Sum',
+                    questionTitleSlug: 'two-sum',
+                    difficulty: 'Easy',
+                    acRate: 0.5,
+                    isPaidOnly: false,
+                    status: null,
+                    topicTags: [],
+                  },
+                },
+              ],
+            },
+          }),
+        );
+      };
+      assert.deepStrictEqual(await client.getDailyChallenge(), {
+        frontendQuestionId: '1',
+        title: 'Two Sum',
+        titleSlug: 'two-sum',
+        difficulty: 'Easy',
+        acRate: 50,
+        paidOnly: false,
+        status: null,
+        topicTags: [],
+      });
+      fetchMock = () => Promise.resolve(createMockResponse({ data: { todayRecord: [] } }));
+      assert.strictEqual(await client.getDailyChallenge(), undefined);
+    });
+
+    test('Should keep the global daily challenge query', async () => {
+      const client = new LeetCodeClient();
+      const question = { titleSlug: 'two-sum' };
+      fetchMock = (_url, init) => {
+        assert.match(String(init?.body), /activeDailyCodingChallengeQuestion/);
+        return Promise.resolve(
+          createMockResponse({ data: { activeDailyCodingChallengeQuestion: { question } } }),
+        );
+      };
+      assert.deepStrictEqual(await client.getDailyChallenge(), question);
+    });
+
+    test('Should open China problem details without the global discussion field', async () => {
+      const client = new LeetCodeClient();
+      client.setEndpoint('https://leetcode.cn');
+      fetchMock = (_url, init) => {
+        assert.doesNotMatch(String(init?.body), /questionDiscussionTopic/);
+        assert.match(String(init?.body), /translatedTitle translatedContent/);
+        return Promise.resolve(
+          createMockResponse({
+            data: {
+              question: {
+                title: 'Two Sum',
+                translatedTitle: 'Localized Two Sum',
+                content: 'Original',
+                translatedContent: 'Localized',
+                titleSlug: 'two-sum',
+              },
+            },
+          }),
+        );
+      };
+      const details = await client.getProblemDetails('two-sum');
+      assert.strictEqual(details.title, 'Localized Two Sum');
+      assert.strictEqual(details.content, 'Localized');
+      assert.strictEqual(details.topicId, undefined);
     });
 
     test('Should fetch discussion comments for a topic', async () => {

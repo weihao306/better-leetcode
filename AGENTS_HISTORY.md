@@ -38,3 +38,7 @@
 - Added `better-leetcode.additionalStudyPlans` to append LeetCode study plan slugs and refresh the Study Lists sidebar when the setting changes.
 - Preserved the built-in plans and favorites, and added settings tests and a README example.
 - Bumped the extension to `1.4.0` and documented the setting in `CHANGELOG.md`.
+
+## 2026-11-25: LeetCode China GraphQL Compatibility
+
+- Use China-specific catalog, daily challenge, and problem-detail queries; share paging across full and incremental refreshes and separate catalog caches by endpoint.

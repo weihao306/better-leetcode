@@ -15,6 +15,39 @@ import {
 } from './types';
 import { Logger } from '../logger';
 
+interface ProblemPage {
+  total: number;
+  questions: Problem[];
+}
+
+type ChinaProblem = Omit<Problem, 'frontendQuestionId' | 'difficulty'> & {
+  questionFrontendId: string;
+  difficulty: 'EASY' | 'MEDIUM' | 'HARD' | Problem['difficulty'];
+  translatedTitle?: string | null;
+};
+
+function normalizeChinaProblem({
+  questionFrontendId,
+  translatedTitle,
+  ...problem
+}: ChinaProblem): Problem {
+  const difficulty = { EASY: 'Easy', MEDIUM: 'Medium', HARD: 'Hard' } as const;
+  const status = problem.status?.toLowerCase();
+  return {
+    ...problem,
+    frontendQuestionId: questionFrontendId,
+    title: translatedTitle || problem.title,
+    difficulty:
+      problem.difficulty === 'Easy' ||
+      problem.difficulty === 'Medium' ||
+      problem.difficulty === 'Hard'
+        ? problem.difficulty
+        : difficulty[problem.difficulty],
+    acRate: problem.acRate * 100,
+    status: status === 'to_do' || status === 'not_started' ? null : (status ?? null),
+  };
+}
+
 /**
  * Helper to parse a raw cookie string and extract LeetCode session and CSRF token.
  *
@@ -112,6 +145,11 @@ export class LeetCodeClient {
    */
   public getEndpoint(): string {
     return this.endpoint;
+  }
+
+  private isChinaEndpoint(): boolean {
+    const hostname = new URL(this.endpoint).hostname;
+    return hostname === 'leetcode.cn' || hostname === 'www.leetcode.cn';
   }
 
   /**
@@ -235,6 +273,47 @@ export class LeetCodeClient {
    * @returns A promise that resolves to the daily challenge problem, or undefined if not found.
    */
   public async getDailyChallenge(): Promise<Problem | undefined> {
+    if (this.isChinaEndpoint()) {
+      const data = await this.query<{
+        todayRecord?: Array<{
+          question?:
+            | (Omit<ChinaProblem, 'title' | 'titleSlug' | 'paidOnly'> & {
+                questionTitle: string;
+                questionTitleSlug: string;
+                isPaidOnly: boolean;
+              })
+            | null;
+        } | null> | null;
+      }>(`
+        query questionOfToday {
+          todayRecord {
+            question {
+              questionFrontendId
+              questionTitle
+              translatedTitle
+              questionTitleSlug
+              difficulty
+              acRate
+              isPaidOnly
+              status
+              topicTags { name slug }
+            }
+          }
+        }
+      `);
+      const question = data?.todayRecord?.find((record) => record?.question)?.question;
+      if (!question) {
+        return undefined;
+      }
+      const { questionTitle, questionTitleSlug, isPaidOnly, ...fields } = question;
+      return normalizeChinaProblem({
+        ...fields,
+        title: questionTitle,
+        titleSlug: questionTitleSlug,
+        paidOnly: isPaidOnly,
+      });
+    }
+
     const queryStr = `
       query questionOfToday {
         activeDailyCodingChallengeQuestion {
@@ -280,6 +359,41 @@ export class LeetCodeClient {
    * @returns A promise that resolves to an array of problems.
    */
   public async getProblems(skip: number = 0, limit: number = 50): Promise<Problem[]> {
+    return (await this.getProblemPage(skip, limit))?.questions ?? [];
+  }
+
+  /** Fetches one catalog page and the total count using the configured site's schema. */
+  public async getProblemPage(skip: number, limit: number): Promise<ProblemPage | undefined> {
+    if (this.isChinaEndpoint()) {
+      const data = await this.query<{
+        problemsetQuestionListV2?: { totalLength: number; questions: ChinaProblem[] } | null;
+      }>(
+        `
+        query problemsetQuestionListV2($limit: Int, $skip: Int) {
+          problemsetQuestionListV2(limit: $limit, skip: $skip) {
+            totalLength
+            questions {
+              questionFrontendId
+              title
+              translatedTitle
+              titleSlug
+              difficulty
+              acRate
+              paidOnly
+              status
+              topicTags { name slug }
+            }
+          }
+        }
+      `,
+        { skip, limit },
+      );
+      const page = data?.problemsetQuestionListV2;
+      return page
+        ? { total: page.totalLength, questions: page.questions.map(normalizeChinaProblem) }
+        : undefined;
+    }
+
     const queryStr = `
       query problemsetQuestionList($categorySlug: String, $limit: Int, $skip: Int, $filters: QuestionListFilterInput) {
         problemsetQuestionList: questionList(
@@ -305,19 +419,13 @@ export class LeetCodeClient {
         }
       }
     `;
-    const variables = {
+    const data = await this.query<{ problemsetQuestionList?: ProblemPage | null }>(queryStr, {
       categorySlug: '',
       skip,
       limit,
       filters: {},
-    };
-    const data = await this.query<{
-      problemsetQuestionList: { total: number; questions: Problem[] };
-    }>(queryStr, variables);
-    if (data === undefined || data.problemsetQuestionList === undefined) {
-      return [];
-    }
-    return data.problemsetQuestionList.questions;
+    });
+    return data?.problemsetQuestionList ?? undefined;
   }
 
   /**
@@ -329,43 +437,13 @@ export class LeetCodeClient {
    * @returns The full list of all problems on the platform.
    */
   public async getAllProblems(batchSize: number = 100): Promise<Problem[]> {
-    const queryStr = `
-      query problemsetQuestionList($categorySlug: String, $limit: Int, $skip: Int, $filters: QuestionListFilterInput) {
-        problemsetQuestionList: questionList(
-          categorySlug: $categorySlug
-          limit: $limit
-          skip: $skip
-          filters: $filters
-        ) {
-          total: totalNum
-          questions: data {
-            frontendQuestionId: questionFrontendId
-            title
-            titleSlug
-            difficulty
-            acRate
-            paidOnly: isPaidOnly
-            status
-            topicTags {
-              name
-              slug
-            }
-          }
-        }
-      }
-    `;
-
-    // First batch — learn total count
-    const firstData = await this.query<{
-      problemsetQuestionList: { total: number; questions: Problem[] };
-    }>(queryStr, { categorySlug: '', skip: 0, limit: batchSize, filters: {} });
-
-    if (firstData === undefined || firstData.problemsetQuestionList === undefined) {
+    const firstPage = await this.getProblemPage(0, batchSize);
+    if (firstPage === undefined) {
       return [];
     }
 
-    const total = firstData.problemsetQuestionList.total;
-    const allProblems: Problem[] = [...firstData.problemsetQuestionList.questions];
+    const { total, questions } = firstPage;
+    const allProblems: Problem[] = [...questions];
 
     // Fetch remaining pages concurrently in batches
     const remainingPages: number[] = [];
@@ -375,15 +453,7 @@ export class LeetCodeClient {
 
     if (remainingPages.length > 0) {
       const pageResults = await Promise.all(
-        remainingPages.map(async (skip) => {
-          const data = await this.query<{
-            problemsetQuestionList: { total: number; questions: Problem[] };
-          }>(queryStr, { categorySlug: '', skip, limit: batchSize, filters: {} });
-          if (data === undefined || data.problemsetQuestionList === undefined) {
-            return [];
-          }
-          return data.problemsetQuestionList.questions;
-        }),
+        remainingPages.map((skip) => this.getProblems(skip, batchSize)),
       );
 
       for (const pageProblems of pageResults) {
@@ -401,17 +471,17 @@ export class LeetCodeClient {
    * @returns A promise that resolves to the detailed problem information.
    */
   public async getProblemDetails(titleSlug: string): Promise<ProblemDetails> {
+    const isChina = this.isChinaEndpoint();
     const queryStr = `
       query questionData($titleSlug: String!) {
-        questionDiscussionTopic(questionSlug: $titleSlug) {
-          id
-        }
+        ${isChina ? '' : 'questionDiscussionTopic(questionSlug: $titleSlug) { id }'}
         question(titleSlug: $titleSlug) {
           questionId
           questionFrontendId
           title
           titleSlug
           content
+          ${isChina ? 'translatedTitle translatedContent' : ''}
           difficulty
           paidOnly: isPaidOnly
           codeSnippets {
@@ -432,9 +502,21 @@ export class LeetCodeClient {
     `;
     const variables = { titleSlug };
     const data = await this.query<{
-      question: ProblemDetails;
+      question: ProblemDetails & {
+        translatedTitle?: string | null;
+        translatedContent?: string | null;
+      };
       questionDiscussionTopic?: { id: number };
     }>(queryStr, variables);
+
+    if (isChina && data.question) {
+      const { translatedTitle, translatedContent, ...question } = data.question;
+      return {
+        ...question,
+        title: translatedTitle || question.title,
+        content: translatedContent || question.content,
+      };
+    }
 
     if (
       data.question !== undefined &&
