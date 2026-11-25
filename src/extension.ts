@@ -1422,7 +1422,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   vscode.window.registerTreeDataProvider('better-leetcode.views.allProblems', allProblemsProvider);
 
   const studyListsProvider = new StudyListsTreeDataProvider(authManager);
-  vscode.window.registerTreeDataProvider('better-leetcode.views.studyLists', studyListsProvider);
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('better-leetcode.views.studyLists', studyListsProvider),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('better-leetcode.additionalStudyPlans')) {
+        studyListsProvider.refresh();
+      }
+    }),
+  );
 
   const contestsProvider = new ContestsTreeDataProvider(authManager, allProblemsProvider);
   vscode.window.registerTreeDataProvider('better-leetcode.views.contests', contestsProvider);

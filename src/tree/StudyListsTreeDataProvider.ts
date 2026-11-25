@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { LeetCodeAuthManager } from '../leetcode';
 import { StudyPlanQuestion } from '../leetcode/types';
 import { Logger } from '../logger';
+import { getStudyPlanEntries } from './studyPlans';
 
 /**
  * Represents a study plan item in the tree view.
@@ -191,19 +192,21 @@ export class StudyListsTreeDataProvider implements vscode.TreeDataProvider<vscod
    */
   async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
     if (!element) {
-      const defaultLists: vscode.TreeItem[] = [
-        new StudyPlanItem('Top Interview 150', 'top-interview-150'),
-        new StudyPlanItem('LeetCode 75', 'leetcode-75'),
-      ];
+      const configuredPlans = vscode.workspace
+        .getConfiguration('better-leetcode')
+        .get<unknown>('additionalStudyPlans');
+      const lists: vscode.TreeItem[] = getStudyPlanEntries(configuredPlans).map(
+        ({ name, slug }) => new StudyPlanItem(name, slug),
+      );
       try {
         const favorites = await this.authManager.getClient().getFavoriteLists();
         for (const fav of favorites) {
-          defaultLists.push(new FavoriteListItem(fav.name, fav.slug));
+          lists.push(new FavoriteListItem(fav.name, fav.slug));
         }
       } catch (err) {
         Logger.getInstance().error('tree', 'Failed to fetch favorites', err);
       }
-      return defaultLists;
+      return lists;
     }
 
     if (element instanceof FavoriteListItem) {

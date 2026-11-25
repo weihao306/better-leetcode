@@ -4,6 +4,12 @@ All notable changes to the "better-leetcode" extension will be documented in thi
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/) and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-11-25
+
+### Added
+
+- Added the `better-leetcode.additionalStudyPlans` setting for adding LeetCode study plans by slug. The Study Lists sidebar refreshes automatically when the setting changes.
+
 ## [1.3.2] - 2026-06-14
 
 ### Security

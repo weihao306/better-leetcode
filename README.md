@@ -36,6 +36,20 @@ Better LeetCode brings the full LeetCode experience directly into your IDE with 
 ### Screenshot
 ![Demo Video](resources/Better-Leetcode-demo.gif)
 
+### Add Study Plans
+
+Open VS Code Settings, search for `better-leetcode.additionalStudyPlans`, and use **Add Item** to enter each study plan slug. For example, use `sql-50` for `https://leetcode.com/studyplan/sql-50/`.
+
+You can also edit `settings.json` directly.
+
+```json
+{
+  "better-leetcode.additionalStudyPlans": ["sql-50", "top-100-liked"]
+}
+```
+
+The **Study Lists** sidebar refreshes when you save the setting. It displays the built-in plans, your additional plans, and your LeetCode favorites.
+
 ---
 
 ## 🔑 Authentication / Login
